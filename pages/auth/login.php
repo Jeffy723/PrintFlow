@@ -1,0 +1,55 @@
+<?php
+
+declare(strict_types=1);
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $email = trim((string) ($_POST['email'] ?? ''));
+    $password = (string) ($_POST['password'] ?? '');
+
+    if ($email === '' || $password === '') {
+        flash('error', 'Email and password are required.');
+    } else {
+        $pdo = getDatabaseConnection();
+        $stmt = $pdo->prepare('SELECT id, name, email, password, role FROM users WHERE email = :email LIMIT 1');
+        $stmt->execute([':email' => $email]);
+        $user = $stmt->fetch();
+
+        if ($user && password_verify($password, $user['password'])) {
+            loginUser($user);
+            redirect('index.php?page=dashboard');
+        }
+
+        flash('error', 'Invalid email or password.');
+    }
+}
+
+$flash = getFlash();
+?>
+
+<div class="login-box">
+    <h1>Login to PrintFlow</h1>
+    <p class="subtitle">Printing job and order management system</p>
+
+    <?php if ($flash): ?>
+        <div class="flash flash-<?php echo e($flash['type']); ?>"><?php echo e($flash['message']); ?></div>
+    <?php endif; ?>
+
+    <form method="post">
+        <div class="form-grid">
+            <div>
+                <label for="email">Email</label>
+                <input type="email" id="email" name="email" value="" required>
+            </div>
+            <div>
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" required>
+            </div>
+        </div>
+
+        <div class="form-actions">
+            <button class="btn" type="submit">Login</button>
+        </div>
+    </form>
+
+    <p class="muted" style="margin-top: 16px;">Demo admin: admin@printflow.local / admin123</p>
+</div>
