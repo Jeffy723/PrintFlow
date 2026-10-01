@@ -12,6 +12,131 @@ function isValidDateString(string $value): bool
     return $date instanceof DateTimeImmutable && $date->format('Y-m-d') === $value;
 }
 
+function getOrderForwardTransitions(): array
+{
+    return [
+        'Pending' => ['Confirmed'],
+        'Confirmed' => ['In Production'],
+        'In Production' => ['Ready'],
+        'Ready' => ['Completed'],
+        'Completed' => [],
+        'Cancelled' => [],
+    ];
+}
+
+function getNextOrderStatus(string $currentStatus): ?string
+{
+    $nextStatuses = getOrderForwardTransitions()[$currentStatus] ?? [];
+
+    return $nextStatuses[0] ?? null;
+}
+
+function getOrderTransitionError(string $currentStatus, string $requestedStatus): ?string
+{
+    if ($currentStatus === 'Completed') {
+        return 'This order has already been completed.';
+    }
+
+    if ($currentStatus === 'Cancelled') {
+        return 'This order has already been cancelled.';
+    }
+
+    $allowedStatuses = ['Pending', 'Confirmed', 'In Production', 'Ready', 'Completed', 'Cancelled'];
+    if (!in_array($requestedStatus, $allowedStatuses, true)) {
+        return 'Selected order status is invalid.';
+    }
+
+    if (in_array($requestedStatus, getOrderForwardTransitions()[$currentStatus] ?? [], true)) {
+        return null;
+    }
+
+    return 'This order cannot move from ' . $currentStatus . ' to ' . $requestedStatus . '.';
+}
+
+function getOrderCancellationError(string $currentStatus): ?string
+{
+    if (in_array($currentStatus, ['Pending', 'Confirmed'], true)) {
+        return null;
+    }
+
+    if ($currentStatus === 'In Production' || $currentStatus === 'Ready') {
+        return 'This order cannot be cancelled after production has started.';
+    }
+
+    if ($currentStatus === 'Completed') {
+        return 'This order has already been completed.';
+    }
+
+    if ($currentStatus === 'Cancelled') {
+        return 'This order has already been cancelled.';
+    }
+
+    return 'This order cannot be cancelled from ' . $currentStatus . '.';
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array(($_POST['action'] ?? ''), ['transition', 'cancel'], true)) {
+    $orderId = (int) ($_POST['order_id'] ?? 0);
+
+    if ($orderId <= 0) {
+        flash('error', 'The selected order is invalid.');
+        redirect('index.php?page=orders');
+    }
+
+    try {
+        $pdo->beginTransaction();
+        $orderStmt = $pdo->prepare('SELECT status FROM orders WHERE id = :id LIMIT 1 FOR UPDATE');
+        $orderStmt->execute([':id' => $orderId]);
+        $order = $orderStmt->fetch();
+
+        if (!$order) {
+            $pdo->rollBack();
+            flash('error', 'The selected order could not be found.');
+            redirect('index.php?page=orders');
+        }
+
+        $currentStatus = (string) $order['status'];
+        $isCancellation = $_POST['action'] === 'cancel';
+        $requestedStatus = $isCancellation
+            ? 'Cancelled'
+            : trim((string) ($_POST['target_status'] ?? ''));
+        $transitionError = $isCancellation
+            ? getOrderCancellationError($currentStatus)
+            : getOrderTransitionError($currentStatus, $requestedStatus);
+
+        if ($transitionError !== null) {
+            $pdo->rollBack();
+            flash('error', $transitionError);
+            redirect('index.php?page=orders');
+        }
+
+        $updateStmt = $pdo->prepare('UPDATE orders SET status = :status WHERE id = :id AND status = :current_status');
+        $updateStmt->execute([
+            ':status' => $requestedStatus,
+            ':id' => $orderId,
+            ':current_status' => $currentStatus,
+        ]);
+
+        if ($updateStmt->rowCount() !== 1) {
+            $pdo->rollBack();
+            flash('error', 'The order status changed before this action could be applied. Please try again.');
+            redirect('index.php?page=orders');
+        }
+
+        $pdo->commit();
+        flash('success', $isCancellation
+            ? 'Order cancelled successfully.'
+            : 'Order moved to ' . $requestedStatus . '.');
+        redirect('index.php?page=orders');
+    } catch (Throwable $exception) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+
+        flash('error', 'Order status could not be updated. Please try again.');
+        redirect('index.php?page=orders');
+    }
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save') {
     $customerId = (int) ($_POST['customer_id'] ?? 0);
     $quotationId = !empty($_POST['quotation_id']) ? (int) $_POST['quotation_id'] : null;
@@ -19,9 +144,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save'
     $deadline = trim((string) ($_POST['deadline'] ?? ''));
     $discount = (float) ($_POST['discount'] ?? 0);
     $notes = trim((string) ($_POST['notes'] ?? ''));
-    $status = trim((string) ($_POST['status'] ?? 'Pending'));
     $itemRows = $_POST['items'] ?? [];
-    $allowedStatuses = ['Pending', 'Confirmed', 'In Production', 'Ready', 'Completed', 'Cancelled'];
     $errors = [];
 
     if ($customerId <= 0) {
@@ -68,10 +191,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save'
 
     if ($discount < 0) {
         $errors[] = 'Discount cannot be negative.';
-    }
-
-    if (!in_array($status, $allowedStatuses, true)) {
-        $errors[] = 'Selected order status is invalid.';
     }
 
     if (!is_array($itemRows) || $itemRows === []) {
@@ -158,7 +277,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save'
             ':quotation_id' => $quotationId,
             ':order_date' => $orderDate,
             ':deadline' => $deadline,
-            ':status' => $status,
+            ':status' => 'Pending',
             ':subtotal' => $subtotal,
             ':discount' => $discount,
             ':total_amount' => $totalAmount,
@@ -235,17 +354,6 @@ $orders = $pdo->query('SELECT o.*, c.name AS customer_name FROM orders o JOIN cu
                 <input type="date" name="deadline" value="<?php echo date('Y-m-d', strtotime('+5 days')); ?>" required>
             </div>
             <div>
-                <label>Order Status</label>
-                <select name="status">
-                    <option value="Pending">Pending</option>
-                    <option value="Confirmed">Confirmed</option>
-                    <option value="In Production">In Production</option>
-                    <option value="Ready">Ready</option>
-                    <option value="Completed">Completed</option>
-                    <option value="Cancelled">Cancelled</option>
-                </select>
-            </div>
-            <div>
                 <label>Discount</label>
                 <input type="number" name="discount" step="0.01" min="0" value="0">
             </div>
@@ -298,6 +406,7 @@ $orders = $pdo->query('SELECT o.*, c.name AS customer_name FROM orders o JOIN cu
                 <th>Status</th>
                 <th>Deadline</th>
                 <th>Total</th>
+                <th>Actions</th>
             </tr>
         </thead>
         <tbody>
@@ -309,11 +418,37 @@ $orders = $pdo->query('SELECT o.*, c.name AS customer_name FROM orders o JOIN cu
                         <td><span class="pill"><?php echo e($order['status']); ?></span></td>
                         <td><?php echo e($order['deadline']); ?></td>
                         <td><?php echo e(money((float) $order['total_amount'])); ?></td>
+                        <td>
+                            <?php $nextStatus = getNextOrderStatus((string) $order['status']); ?>
+                            <?php if ($nextStatus !== null): ?>
+                                <?php
+                                $actionLabels = [
+                                    'Confirmed' => 'Confirm order',
+                                    'In Production' => 'Start production',
+                                    'Ready' => 'Mark ready',
+                                    'Completed' => 'Complete order',
+                                ];
+                                ?>
+                                <form method="post" data-confirm="Move this order from <?php echo e($order['status']); ?> to <?php echo e($nextStatus); ?>?" style="display: inline-block; margin-right: 8px;">
+                                    <input type="hidden" name="action" value="transition">
+                                    <input type="hidden" name="order_id" value="<?php echo e($order['id']); ?>">
+                                    <input type="hidden" name="target_status" value="<?php echo e($nextStatus); ?>">
+                                    <button type="submit" class="btn btn-small"><?php echo e($actionLabels[$nextStatus] ?? 'Advance order'); ?></button>
+                                </form>
+                            <?php endif; ?>
+                            <?php if (getOrderCancellationError((string) $order['status']) === null): ?>
+                                <form method="post" data-confirm="Cancel order <?php echo e($order['order_number']); ?>? This cannot be undone." style="display: inline-block;">
+                                    <input type="hidden" name="action" value="cancel">
+                                    <input type="hidden" name="order_id" value="<?php echo e($order['id']); ?>">
+                                    <button type="submit" class="btn btn-secondary btn-small">Cancel</button>
+                                </form>
+                            <?php endif; ?>
+                        </td>
                     </tr>
                 <?php endforeach; ?>
             <?php else: ?>
                 <tr>
-                    <td colspan="5"><p class="empty-state">No orders yet.</p></td>
+                    <td colspan="6"><p class="empty-state">No orders yet.</p></td>
                 </tr>
             <?php endif; ?>
         </tbody>
