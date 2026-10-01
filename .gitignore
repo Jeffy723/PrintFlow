@@ -1,0 +1,23 @@
+# Environment files and credentials
+.env
+.env.*
+!.env.example
+*credentials*
+*secret*
+config/database.local.php
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local development and temporary files
+*.log
+*.tmp
