@@ -5,6 +5,13 @@ declare(strict_types=1);
 requireLogin();
 $pdo = getDatabaseConnection();
 
+function isValidDateString(string $value): bool
+{
+    $date = DateTimeImmutable::createFromFormat('!Y-m-d', $value);
+
+    return $date instanceof DateTimeImmutable && $date->format('Y-m-d') === $value;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save') {
     $customerId = (int) ($_POST['customer_id'] ?? 0);
     $quotationId = !empty($_POST['quotation_id']) ? (int) $_POST['quotation_id'] : null;
@@ -13,81 +20,177 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save'
     $discount = (float) ($_POST['discount'] ?? 0);
     $notes = trim((string) ($_POST['notes'] ?? ''));
     $status = trim((string) ($_POST['status'] ?? 'Pending'));
-    $serviceIds = $_POST['service_id'] ?? [];
-    $quantities = $_POST['quantity'] ?? [];
+    $itemRows = $_POST['items'] ?? [];
+    $allowedStatuses = ['Pending', 'Confirmed', 'In Production', 'Ready', 'Completed', 'Cancelled'];
+    $errors = [];
 
-    if ($customerId <= 0 || $deadline === '') {
-        flash('error', 'Customer and deadline are required for an order.');
-        redirect('index.php?page=orders');
+    if ($customerId <= 0) {
+        $errors[] = 'Customer is required.';
+    } else {
+        $customerStmt = $pdo->prepare('SELECT id FROM customers WHERE id = :id LIMIT 1');
+        $customerStmt->execute([':id' => $customerId]);
+        if (!$customerStmt->fetch()) {
+            $errors[] = 'Selected customer does not exist.';
+        }
+    }
+
+    if ($quotationId !== null && $quotationId <= 0) {
+        $errors[] = 'Quotation selection is invalid.';
+    }
+
+    if ($quotationId !== null) {
+        $quotationStmt = $pdo->prepare('SELECT id, customer_id FROM quotations WHERE id = :id LIMIT 1');
+        $quotationStmt->execute([':id' => $quotationId]);
+        $quotation = $quotationStmt->fetch();
+
+        if (!$quotation) {
+            $errors[] = 'Selected quotation does not exist.';
+        } elseif ((int) $quotation['customer_id'] !== $customerId) {
+            $errors[] = 'Selected quotation does not belong to the selected customer.';
+        }
+    }
+
+    if ($orderDate === '' || !isValidDateString($orderDate)) {
+        $errors[] = 'Order date is invalid.';
+    }
+
+    if ($deadline === '' || !isValidDateString($deadline)) {
+        $errors[] = 'Deadline is required and must be a valid date.';
+    }
+
+    if ($deadline !== '' && $orderDate !== '' && isValidDateString($orderDate) && isValidDateString($deadline) && $deadline < $orderDate) {
+        $errors[] = 'Deadline cannot be earlier than the order date.';
+    }
+
+    if ($deadline !== '' && isValidDateString($deadline) && $deadline < date('Y-m-d')) {
+        $errors[] = 'Deadline cannot be in the past for a new order.';
+    }
+
+    if ($discount < 0) {
+        $errors[] = 'Discount cannot be negative.';
+    }
+
+    if (!in_array($status, $allowedStatuses, true)) {
+        $errors[] = 'Selected order status is invalid.';
+    }
+
+    if (!is_array($itemRows) || $itemRows === []) {
+        $errors[] = 'Add at least one order item.';
     }
 
     $items = [];
-    foreach ($serviceIds as $index => $serviceId) {
-        $cleanServiceId = (int) $serviceId;
-        $quantity = (int) ($quantities[$index] ?? 0);
-        if ($cleanServiceId <= 0 || $quantity <= 0) {
-            continue;
+    if (is_array($itemRows)) {
+        foreach ($itemRows as $index => $itemData) {
+            $serviceId = (int) ($itemData['service_id'] ?? 0);
+            $quantity = (int) ($itemData['quantity'] ?? 0);
+            $specifications = trim((string) ($itemData['specifications'] ?? ''));
+            $itemLabel = 'Order item ' . ($index + 1);
+
+            if ($serviceId <= 0) {
+                $errors[] = $itemLabel . ': select a valid service.';
+                continue;
+            }
+
+            if ($quantity <= 0) {
+                $errors[] = $itemLabel . ': quantity must be greater than 0.';
+                continue;
+            }
+
+            $serviceStmt = $pdo->prepare('SELECT id, name, base_price FROM services WHERE id = :id AND is_active = 1 LIMIT 1');
+            $serviceStmt->execute([':id' => $serviceId]);
+            $service = $serviceStmt->fetch();
+
+            if (!$service) {
+                $errors[] = $itemLabel . ': selected service is invalid or inactive.';
+                continue;
+            }
+
+            $unitPrice = (float) $service['base_price'];
+            $totalPrice = $unitPrice * $quantity;
+
+            $items[] = [
+                'service_id' => $serviceId,
+                'description' => $service['name'],
+                'quantity' => $quantity,
+                'unit_price' => $unitPrice,
+                'total_price' => $totalPrice,
+                'specifications' => $specifications,
+            ];
         }
-
-        $serviceStmt = $pdo->prepare('SELECT id, name, base_price FROM services WHERE id = :id AND is_active = 1 LIMIT 1');
-        $serviceStmt->execute([':id' => $cleanServiceId]);
-        $service = $serviceStmt->fetch();
-
-        if (!$service) {
-            continue;
-        }
-
-        $unitPrice = (float) $service['base_price'];
-        $items[] = [
-            'service_id' => $cleanServiceId,
-            'description' => $service['name'],
-            'quantity' => $quantity,
-            'unit_price' => $unitPrice,
-            'total_price' => $unitPrice * $quantity,
-        ];
     }
 
     if ($items === []) {
-        flash('error', 'Add at least one order item.');
+        $errors[] = 'At least one valid order item is required.';
+    }
+
+    if ($errors === []) {
+        $subtotal = 0.0;
+        foreach ($items as $item) {
+            $subtotal += (float) $item['total_price'];
+        }
+
+        if ($discount > $subtotal) {
+            $errors[] = 'Discount cannot exceed the order subtotal.';
+        }
+    }
+
+    if ($errors !== []) {
+        flash('error', implode(' | ', $errors));
         redirect('index.php?page=orders');
     }
 
-    $subtotal = array_sum(array_column($items, 'total_price'));
-    $totalAmount = max($subtotal - $discount, 0);
-    $orderNo = 'ORD-' . date('Ymd') . '-' . substr((string) time(), -4);
-
-    $stmt = $pdo->prepare('INSERT INTO orders (order_number, customer_id, created_by, quotation_id, order_date, deadline, status, subtotal, discount, total_amount, notes) VALUES (:order_number, :customer_id, :created_by, :quotation_id, :order_date, :deadline, :status, :subtotal, :discount, :total_amount, :notes)');
-    $stmt->execute([
-        ':order_number' => $orderNo,
-        ':customer_id' => $customerId,
-        ':created_by' => currentUser()['id'],
-        ':quotation_id' => $quotationId,
-        ':order_date' => $orderDate,
-        ':deadline' => $deadline,
-        ':status' => $status,
-        ':subtotal' => $subtotal,
-        ':discount' => $discount,
-        ':total_amount' => $totalAmount,
-        ':notes' => $notes,
-    ]);
-
-    $orderId = (int) $pdo->lastInsertId();
-    $itemStmt = $pdo->prepare('INSERT INTO order_items (order_id, service_id, description, quantity, unit_price, total_price, specifications) VALUES (:order_id, :service_id, :description, :quantity, :unit_price, :total_price, :specifications)');
-
+    $subtotal = 0.0;
     foreach ($items as $item) {
-        $itemStmt->execute([
-            ':order_id' => $orderId,
-            ':service_id' => $item['service_id'],
-            ':description' => $item['description'],
-            ':quantity' => $item['quantity'],
-            ':unit_price' => $item['unit_price'],
-            ':total_price' => $item['total_price'],
-            ':specifications' => '',
-        ]);
+        $subtotal += (float) $item['total_price'];
     }
 
-    flash('success', 'Order created successfully.');
-    redirect('index.php?page=orders');
+    $totalAmount = $subtotal - $discount;
+    $orderNo = 'ORD-' . date('Ymd') . '-' . substr((string) time(), -4);
+
+    try {
+        $pdo->beginTransaction();
+
+        $stmt = $pdo->prepare('INSERT INTO orders (order_number, customer_id, created_by, quotation_id, order_date, deadline, status, subtotal, discount, total_amount, notes) VALUES (:order_number, :customer_id, :created_by, :quotation_id, :order_date, :deadline, :status, :subtotal, :discount, :total_amount, :notes)');
+        $stmt->execute([
+            ':order_number' => $orderNo,
+            ':customer_id' => $customerId,
+            ':created_by' => currentUser()['id'],
+            ':quotation_id' => $quotationId,
+            ':order_date' => $orderDate,
+            ':deadline' => $deadline,
+            ':status' => $status,
+            ':subtotal' => $subtotal,
+            ':discount' => $discount,
+            ':total_amount' => $totalAmount,
+            ':notes' => $notes,
+        ]);
+
+        $orderId = (int) $pdo->lastInsertId();
+        $itemStmt = $pdo->prepare('INSERT INTO order_items (order_id, service_id, description, quantity, unit_price, total_price, specifications) VALUES (:order_id, :service_id, :description, :quantity, :unit_price, :total_price, :specifications)');
+
+        foreach ($items as $item) {
+            $itemStmt->execute([
+                ':order_id' => $orderId,
+                ':service_id' => $item['service_id'],
+                ':description' => $item['description'],
+                ':quantity' => $item['quantity'],
+                ':unit_price' => $item['unit_price'],
+                ':total_price' => $item['total_price'],
+                ':specifications' => $item['specifications'],
+            ]);
+        }
+
+        $pdo->commit();
+        flash('success', 'Order created successfully.');
+        redirect('index.php?page=orders');
+    } catch (Throwable $exception) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+
+        flash('error', 'Order creation failed. Please review your entries and try again.');
+        redirect('index.php?page=orders');
+    }
 }
 
 $customers = $pdo->query('SELECT * FROM customers ORDER BY name ASC')->fetchAll();
@@ -134,12 +237,12 @@ $orders = $pdo->query('SELECT o.*, c.name AS customer_name FROM orders o JOIN cu
             <div>
                 <label>Order Status</label>
                 <select name="status">
-                    <option>Pending</option>
-                    <option>Confirmed</option>
-                    <option>In Production</option>
-                    <option>Ready</option>
-                    <option>Completed</option>
-                    <option>Cancelled</option>
+                    <option value="Pending">Pending</option>
+                    <option value="Confirmed">Confirmed</option>
+                    <option value="In Production">In Production</option>
+                    <option value="Ready">Ready</option>
+                    <option value="Completed">Completed</option>
+                    <option value="Cancelled">Cancelled</option>
                 </select>
             </div>
             <div>
@@ -153,23 +256,33 @@ $orders = $pdo->query('SELECT o.*, c.name AS customer_name FROM orders o JOIN cu
         </div>
 
         <h4 style="margin-top: 20px;">Items</h4>
-        <div class="form-grid">
-            <div>
-                <label>Service</label>
-                <select name="service_id[]">
-                    <option value="">Select service</option>
-                    <?php foreach ($services as $service): ?>
-                        <option value="<?php echo e($service['id']); ?>"><?php echo e($service['name']); ?> - <?php echo e(money((float) $service['base_price'])); ?></option>
-                    <?php endforeach; ?>
-                </select>
-            </div>
-            <div>
-                <label>Quantity</label>
-                <input type="number" name="quantity[]" min="1" value="1">
+        <div id="order-items" class="order-items-list">
+            <div class="order-item-row">
+                <div>
+                    <label>Service</label>
+                    <select name="items[0][service_id]" required>
+                        <option value="">Select service</option>
+                        <?php foreach ($services as $service): ?>
+                            <option value="<?php echo e($service['id']); ?>"><?php echo e($service['name']); ?> - <?php echo e(money((float) $service['base_price'])); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div>
+                    <label>Quantity</label>
+                    <input type="number" name="items[0][quantity]" min="1" value="1" required>
+                </div>
+                <div>
+                    <label>Specifications</label>
+                    <textarea name="items[0][specifications]" rows="2" placeholder="Optional details"></textarea>
+                </div>
+                <div class="item-actions">
+                    <button type="button" class="btn btn-secondary btn-small" data-remove-item>Remove</button>
+                </div>
             </div>
         </div>
 
         <div class="form-actions">
+            <button type="button" class="btn btn-secondary" data-add-item>Add item</button>
             <button class="btn" type="submit">Save order</button>
         </div>
     </form>
