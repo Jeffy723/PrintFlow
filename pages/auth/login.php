@@ -9,17 +9,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($email === '' || $password === '') {
         flash('error', 'Email and password are required.');
     } else {
-        $pdo = getDatabaseConnection();
-        $stmt = $pdo->prepare('SELECT id, name, email, password, role FROM users WHERE email = :email LIMIT 1');
-        $stmt->execute([':email' => $email]);
-        $user = $stmt->fetch();
+        try {
+            $pdo = getDatabaseConnection();
+            $stmt = $pdo->prepare('SELECT id, name, email, password, role FROM users WHERE email = :email LIMIT 1');
+            $stmt->execute([':email' => $email]);
+            $user = $stmt->fetch();
 
-        if ($user && password_verify($password, $user['password'])) {
-            loginUser($user);
-            redirect('index.php?page=dashboard');
+            if ($user && password_verify($password, $user['password'])) {
+                loginUser($user);
+                redirect('index.php?page=dashboard');
+            }
+
+            flash('error', 'Invalid email or password.');
+        } catch (Throwable $exception) {
+            error_log('Login authentication error: ' . $exception->getMessage());
+            flash('error', 'Unable to sign in. Please try again.');
         }
-
-        flash('error', 'Invalid email or password.');
     }
 }
 
