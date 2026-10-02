@@ -33,6 +33,29 @@ function getFlash(): ?array
     return $flash;
 }
 
+function csrfToken(): string
+{
+    if (session_status() !== PHP_SESSION_ACTIVE) {
+        session_start();
+    }
+
+    if (!isset($_SESSION['csrf_token']) || !is_string($_SESSION['csrf_token'])) {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    }
+
+    return $_SESSION['csrf_token'];
+}
+
+function isValidCsrfToken(mixed $token): bool
+{
+    $sessionToken = $_SESSION['csrf_token'] ?? null;
+
+    return is_string($token)
+        && $token !== ''
+        && is_string($sessionToken)
+        && hash_equals($sessionToken, $token);
+}
+
 function e(mixed $value): string
 {
     return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');

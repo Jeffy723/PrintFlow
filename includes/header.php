@@ -40,7 +40,10 @@ $currentPage = $_GET['page'] ?? 'dashboard';
                     <a class="nav-link <?php echo $currentPage === 'orders' ? 'active' : ''; ?>" href="index.php?page=orders">Orders</a>
                     <a class="nav-link <?php echo $currentPage === 'payments' ? 'active' : ''; ?>" href="index.php?page=payments">Payments</a>
                     <a class="nav-link <?php echo $currentPage === 'deliveries' ? 'active' : ''; ?>" href="index.php?page=deliveries">Deliveries</a>
-                    <a class="nav-link" href="index.php?page=logout">Logout</a>
+                    <form method="post" action="index.php?page=logout">
+                        <input type="hidden" name="csrf_token" value="<?php echo e(csrfToken()); ?>">
+                        <button class="nav-link nav-logout" type="submit">Logout</button>
+                    </form>
                 </nav>
             </aside>
             <main class="main-content">

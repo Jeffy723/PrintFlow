@@ -41,6 +41,7 @@ function loginUser(array $user): void
     }
 
     session_regenerate_id(true);
+    unset($_SESSION['csrf_token']);
 
     $_SESSION['user'] = [
         'id' => (int) $user['id'],

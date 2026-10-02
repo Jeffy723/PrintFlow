@@ -3,6 +3,11 @@
 declare(strict_types=1);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!isValidCsrfToken($_POST['csrf_token'] ?? null)) {
+        flash('error', 'Your request could not be verified. Please try again.');
+        redirect('index.php?page=login');
+    }
+
     $email = trim((string) ($_POST['email'] ?? ''));
     $password = (string) ($_POST['password'] ?? '');
 
@@ -40,6 +45,7 @@ $flash = getFlash();
     <?php endif; ?>
 
     <form method="post">
+        <input type="hidden" name="csrf_token" value="<?php echo e(csrfToken()); ?>">
         <div class="form-grid">
             <div>
                 <label for="email">Email</label>

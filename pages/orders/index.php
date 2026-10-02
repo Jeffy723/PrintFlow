@@ -4,6 +4,12 @@ declare(strict_types=1);
 
 requireLogin();
 requireRole(['admin', 'staff']);
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isValidCsrfToken($_POST['csrf_token'] ?? null)) {
+    flash('error', 'Your request could not be verified. Please try again.');
+    redirect('index.php?page=orders');
+}
+
 $pdo = getDatabaseConnection();
 $isAdmin = currentUser()['role'] === 'admin';
 
@@ -369,6 +375,7 @@ $orders = $pdo->query('SELECT o.*, c.name AS customer_name FROM orders o JOIN cu
     <h3>Create order</h3>
     <form method="post">
         <input type="hidden" name="action" value="save">
+        <input type="hidden" name="csrf_token" value="<?php echo e(csrfToken()); ?>">
         <div class="form-grid">
             <div>
                 <label>Customer</label>
@@ -477,6 +484,7 @@ $orders = $pdo->query('SELECT o.*, c.name AS customer_name FROM orders o JOIN cu
                                     ?>
                                     <form method="post" data-confirm="Move this order from <?php echo e($order['status']); ?> to <?php echo e($nextStatus); ?>?" style="display: inline-block; margin-right: 8px;">
                                         <input type="hidden" name="action" value="transition">
+                                        <input type="hidden" name="csrf_token" value="<?php echo e(csrfToken()); ?>">
                                         <input type="hidden" name="order_id" value="<?php echo e($order['id']); ?>">
                                         <input type="hidden" name="target_status" value="<?php echo e($nextStatus); ?>">
                                         <button type="submit" class="btn btn-small"><?php echo e($actionLabels[$nextStatus] ?? 'Advance order'); ?></button>
@@ -485,6 +493,7 @@ $orders = $pdo->query('SELECT o.*, c.name AS customer_name FROM orders o JOIN cu
                                 <?php if (getOrderCancellationError((string) $order['status']) === null): ?>
                                     <form method="post" data-confirm="Cancel order <?php echo e($order['order_number']); ?>? This cannot be undone." style="display: inline-block;">
                                         <input type="hidden" name="action" value="cancel">
+                                        <input type="hidden" name="csrf_token" value="<?php echo e(csrfToken()); ?>">
                                         <input type="hidden" name="order_id" value="<?php echo e($order['id']); ?>">
                                         <button type="submit" class="btn btn-secondary btn-small">Cancel</button>
                                     </form>

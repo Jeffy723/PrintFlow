@@ -9,6 +9,15 @@ require __DIR__ . '/includes/functions.php';
 $page = $_GET['page'] ?? 'dashboard';
 
 if ($page === 'logout') {
+    if (!isPost()) {
+        redirect(isLoggedIn() ? 'index.php?page=dashboard' : 'index.php?page=login');
+    }
+
+    if (!isValidCsrfToken($_POST['csrf_token'] ?? null)) {
+        flash('error', 'Your request could not be verified. Please try again.');
+        redirect(isLoggedIn() ? 'index.php?page=dashboard' : 'index.php?page=login');
+    }
+
     logoutUser();
     session_start();
     session_regenerate_id(true);
