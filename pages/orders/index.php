@@ -14,6 +14,35 @@ function isValidDateString(string $value): bool
     return $date instanceof DateTimeImmutable && $date->format('Y-m-d') === $value;
 }
 
+function sanitizePositiveInt(mixed $value): int
+{
+    if (is_int($value)) {
+        return $value > 0 ? $value : 0;
+    }
+
+    if (is_string($value) && preg_match('/^\d+$/', trim($value)) === 1) {
+        return (int) trim($value);
+    }
+
+    return 0;
+}
+
+function sanitizeNonNegativeFloat(mixed $value): ?float
+{
+    if (!is_numeric($value)) {
+        return null;
+    }
+
+    $parsed = (float) $value;
+
+    return $parsed;
+}
+
+function recordOrderManagementException(Throwable $exception): void
+{
+    error_log('Order management error: ' . $exception->getMessage());
+}
+
 function getOrderForwardTransitions(): array
 {
     return [
@@ -79,7 +108,7 @@ function getOrderCancellationError(string $currentStatus): ?string
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array(($_POST['action'] ?? ''), ['transition', 'cancel'], true)) {
     requireRole(['admin']);
 
-    $orderId = (int) ($_POST['order_id'] ?? 0);
+    $orderId = sanitizePositiveInt($_POST['order_id'] ?? 0);
 
     if ($orderId <= 0) {
         flash('error', 'The selected order is invalid.');
@@ -99,7 +128,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array(($_POST['action'] ?? ''), 
         }
 
         $currentStatus = (string) $order['status'];
-        $isCancellation = $_POST['action'] === 'cancel';
+        $isCancellation = ($_POST['action'] ?? '') === 'cancel';
         $requestedStatus = $isCancellation
             ? 'Cancelled'
             : trim((string) ($_POST['target_status'] ?? ''));
@@ -136,17 +165,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array(($_POST['action'] ?? ''), 
             $pdo->rollBack();
         }
 
+        recordOrderManagementException($exception);
         flash('error', 'Order status could not be updated. Please try again.');
         redirect('index.php?page=orders');
     }
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save') {
-    $customerId = (int) ($_POST['customer_id'] ?? 0);
-    $quotationId = !empty($_POST['quotation_id']) ? (int) $_POST['quotation_id'] : null;
+    $customerId = sanitizePositiveInt($_POST['customer_id'] ?? 0);
+    $quotationRaw = $_POST['quotation_id'] ?? '';
+    $quotationId = trim((string) $quotationRaw) === '' ? null : sanitizePositiveInt($quotationRaw);
     $orderDate = trim((string) ($_POST['order_date'] ?? date('Y-m-d')));
     $deadline = trim((string) ($_POST['deadline'] ?? ''));
-    $discount = (float) ($_POST['discount'] ?? 0);
+    $discount = sanitizeNonNegativeFloat($_POST['discount'] ?? 0);
     $notes = trim((string) ($_POST['notes'] ?? ''));
     $itemRows = $_POST['items'] ?? [];
     $errors = [];
@@ -193,7 +224,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save'
         $errors[] = 'Deadline cannot be in the past for a new order.';
     }
 
-    if ($discount < 0) {
+    if ($discount === null) {
+        $errors[] = 'Discount must be a valid non-negative number.';
+    } elseif ($discount < 0) {
         $errors[] = 'Discount cannot be negative.';
     }
 
@@ -204,8 +237,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save'
     $items = [];
     if (is_array($itemRows)) {
         foreach ($itemRows as $index => $itemData) {
-            $serviceId = (int) ($itemData['service_id'] ?? 0);
-            $quantity = (int) ($itemData['quantity'] ?? 0);
+            if (!is_array($itemData)) {
+                $errors[] = 'Order item ' . ($index + 1) . ': item data is invalid.';
+                continue;
+            }
+
+            $serviceId = sanitizePositiveInt($itemData['service_id'] ?? 0);
+            $quantity = sanitizePositiveInt($itemData['quantity'] ?? 0);
             $specifications = trim((string) ($itemData['specifications'] ?? ''));
             $itemLabel = 'Order item ' . ($index + 1);
 
@@ -311,6 +349,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save'
             $pdo->rollBack();
         }
 
+        recordOrderManagementException($exception);
         flash('error', 'Order creation failed. Please review your entries and try again.');
         redirect('index.php?page=orders');
     }
