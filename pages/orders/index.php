@@ -3,7 +3,9 @@
 declare(strict_types=1);
 
 requireLogin();
+requireRole(['admin', 'staff']);
 $pdo = getDatabaseConnection();
+$isAdmin = currentUser()['role'] === 'admin';
 
 function isValidDateString(string $value): bool
 {
@@ -75,6 +77,8 @@ function getOrderCancellationError(string $currentStatus): ?string
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array(($_POST['action'] ?? ''), ['transition', 'cancel'], true)) {
+    requireRole(['admin']);
+
     $orderId = (int) ($_POST['order_id'] ?? 0);
 
     if ($orderId <= 0) {
@@ -406,7 +410,9 @@ $orders = $pdo->query('SELECT o.*, c.name AS customer_name FROM orders o JOIN cu
                 <th>Status</th>
                 <th>Deadline</th>
                 <th>Total</th>
-                <th>Actions</th>
+                <?php if ($isAdmin): ?>
+                    <th>Actions</th>
+                <?php endif; ?>
             </tr>
         </thead>
         <tbody>
@@ -418,37 +424,39 @@ $orders = $pdo->query('SELECT o.*, c.name AS customer_name FROM orders o JOIN cu
                         <td><span class="pill"><?php echo e($order['status']); ?></span></td>
                         <td><?php echo e($order['deadline']); ?></td>
                         <td><?php echo e(money((float) $order['total_amount'])); ?></td>
-                        <td>
-                            <?php $nextStatus = getNextOrderStatus((string) $order['status']); ?>
-                            <?php if ($nextStatus !== null): ?>
-                                <?php
-                                $actionLabels = [
-                                    'Confirmed' => 'Confirm order',
-                                    'In Production' => 'Start production',
-                                    'Ready' => 'Mark ready',
-                                    'Completed' => 'Complete order',
-                                ];
-                                ?>
-                                <form method="post" data-confirm="Move this order from <?php echo e($order['status']); ?> to <?php echo e($nextStatus); ?>?" style="display: inline-block; margin-right: 8px;">
-                                    <input type="hidden" name="action" value="transition">
-                                    <input type="hidden" name="order_id" value="<?php echo e($order['id']); ?>">
-                                    <input type="hidden" name="target_status" value="<?php echo e($nextStatus); ?>">
-                                    <button type="submit" class="btn btn-small"><?php echo e($actionLabels[$nextStatus] ?? 'Advance order'); ?></button>
-                                </form>
-                            <?php endif; ?>
-                            <?php if (getOrderCancellationError((string) $order['status']) === null): ?>
-                                <form method="post" data-confirm="Cancel order <?php echo e($order['order_number']); ?>? This cannot be undone." style="display: inline-block;">
-                                    <input type="hidden" name="action" value="cancel">
-                                    <input type="hidden" name="order_id" value="<?php echo e($order['id']); ?>">
-                                    <button type="submit" class="btn btn-secondary btn-small">Cancel</button>
-                                </form>
-                            <?php endif; ?>
-                        </td>
+                        <?php if ($isAdmin): ?>
+                            <td>
+                                <?php $nextStatus = getNextOrderStatus((string) $order['status']); ?>
+                                <?php if ($nextStatus !== null): ?>
+                                    <?php
+                                    $actionLabels = [
+                                        'Confirmed' => 'Confirm order',
+                                        'In Production' => 'Start production',
+                                        'Ready' => 'Mark ready',
+                                        'Completed' => 'Complete order',
+                                    ];
+                                    ?>
+                                    <form method="post" data-confirm="Move this order from <?php echo e($order['status']); ?> to <?php echo e($nextStatus); ?>?" style="display: inline-block; margin-right: 8px;">
+                                        <input type="hidden" name="action" value="transition">
+                                        <input type="hidden" name="order_id" value="<?php echo e($order['id']); ?>">
+                                        <input type="hidden" name="target_status" value="<?php echo e($nextStatus); ?>">
+                                        <button type="submit" class="btn btn-small"><?php echo e($actionLabels[$nextStatus] ?? 'Advance order'); ?></button>
+                                    </form>
+                                <?php endif; ?>
+                                <?php if (getOrderCancellationError((string) $order['status']) === null): ?>
+                                    <form method="post" data-confirm="Cancel order <?php echo e($order['order_number']); ?>? This cannot be undone." style="display: inline-block;">
+                                        <input type="hidden" name="action" value="cancel">
+                                        <input type="hidden" name="order_id" value="<?php echo e($order['id']); ?>">
+                                        <button type="submit" class="btn btn-secondary btn-small">Cancel</button>
+                                    </form>
+                                <?php endif; ?>
+                            </td>
+                        <?php endif; ?>
                     </tr>
                 <?php endforeach; ?>
             <?php else: ?>
                 <tr>
-                    <td colspan="6"><p class="empty-state">No orders yet.</p></td>
+                    <td colspan="<?php echo $isAdmin ? '6' : '5'; ?>"><p class="empty-state">No orders yet.</p></td>
                 </tr>
             <?php endif; ?>
         </tbody>
