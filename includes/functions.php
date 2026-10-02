@@ -38,6 +38,26 @@ function e(mixed $value): string
     return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
 }
 
+function appBasePath(): string
+{
+    $scriptName = $_SERVER['SCRIPT_NAME'] ?? '/';
+    $basePath = rtrim(dirname($scriptName), '/\\');
+
+    if ($basePath === '.' || $basePath === '/' || $basePath === '\\') {
+        return '';
+    }
+
+    return $basePath;
+}
+
+function assetUrl(string $path): string
+{
+    $basePath = appBasePath();
+    $assetPath = '/' . ltrim($path, '/');
+
+    return $basePath === '' ? $assetPath : $basePath . $assetPath;
+}
+
 function money(float $amount): string
 {
     return '₹' . number_format($amount, 2);

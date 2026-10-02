@@ -15,8 +15,8 @@ $currentPage = $_GET['page'] ?? 'dashboard';
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PrintFlow</title>
-    <link rel="stylesheet" href="/PrintFlow/public/css/style.css">
-    <script src="/PrintFlow/public/js/script.js" defer></script>
+    <link rel="stylesheet" href="<?php echo e(assetUrl('public/css/style.css')); ?>">
+    <script src="<?php echo e(assetUrl('public/js/script.js')); ?>" defer></script>
 </head>
 <body>
     <?php if ($flash): ?>

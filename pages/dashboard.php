@@ -3,19 +3,36 @@
 declare(strict_types=1);
 
 requireLogin();
-$pdo = getDatabaseConnection();
 
-$stats = [
-    'customers' => (int) $pdo->query('SELECT COUNT(*) FROM customers')->fetchColumn(),
-    'services' => (int) $pdo->query('SELECT COUNT(*) FROM services')->fetchColumn(),
-    'orders' => (int) $pdo->query('SELECT COUNT(*) FROM orders')->fetchColumn(),
-    'quotations' => (int) $pdo->query('SELECT COUNT(*) FROM quotations')->fetchColumn(),
-];
+try {
+    $pdo = getDatabaseConnection();
 
-$productionCount = (int) $pdo->query("SELECT COUNT(*) FROM orders WHERE status = 'In Production'")->fetchColumn();
-$pendingPayments = (int) $pdo->query('SELECT COUNT(*) FROM payments')->fetchColumn();
-$recentOrders = $pdo->query('SELECT o.id, o.order_number, c.name AS customer_name, o.status, o.total_amount, o.order_date FROM orders o JOIN customers c ON c.id = o.customer_id ORDER BY o.created_at DESC LIMIT 5')->fetchAll();
-$recentQuotations = $pdo->query('SELECT q.id, q.quotation_number, c.name AS customer_name, q.total_amount, q.status FROM quotations q JOIN customers c ON c.id = q.customer_id ORDER BY q.created_at DESC LIMIT 5')->fetchAll();
+    $stats = [
+        'customers' => (int) $pdo->query('SELECT COUNT(*) FROM customers')->fetchColumn(),
+        'services' => (int) $pdo->query('SELECT COUNT(*) FROM services')->fetchColumn(),
+        'orders' => (int) $pdo->query('SELECT COUNT(*) FROM orders')->fetchColumn(),
+        'quotations' => (int) $pdo->query('SELECT COUNT(*) FROM quotations')->fetchColumn(),
+    ];
+
+    $productionCount = (int) $pdo->query("SELECT COUNT(*) FROM orders WHERE status = 'In Production'")->fetchColumn();
+    $pendingPayments = (int) $pdo->query('SELECT COUNT(*) FROM payments')->fetchColumn();
+    $recentOrders = $pdo->query('SELECT o.id, o.order_number, c.name AS customer_name, o.status, o.total_amount, o.order_date FROM orders o JOIN customers c ON c.id = o.customer_id ORDER BY o.created_at DESC LIMIT 5')->fetchAll();
+    $recentQuotations = $pdo->query('SELECT q.id, q.quotation_number, c.name AS customer_name, q.total_amount, q.status FROM quotations q JOIN customers c ON c.id = q.customer_id ORDER BY q.created_at DESC LIMIT 5')->fetchAll();
+} catch (Throwable $exception) {
+    error_log('Dashboard statistics error: ' . $exception->getMessage());
+
+    $stats = [
+        'customers' => 0,
+        'services' => 0,
+        'orders' => 0,
+        'quotations' => 0,
+    ];
+
+    $productionCount = 0;
+    $pendingPayments = 0;
+    $recentOrders = [];
+    $recentQuotations = [];
+}
 ?>
 
 <div class="page-header">
