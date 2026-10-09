@@ -151,6 +151,39 @@ When Jintu completes work, the agent should report:
 - what was tested locally
 - any integration issues or follow-up requirements
 
+## Implemented module behavior and UI
+
+The business pages implement the following module-specific behavior:
+
+- Customers: create, edit, delete, and search by name, phone, or email; name and phone are required.
+- Services: create and edit services, select an active status, delete, and search by name or description; names must be unique and base prices cannot be negative.
+- Quotations: create, edit, view, and search by quotation number, customer, or status; quotation dates, status, discount, active services, and item quantities are validated. Item prices and quotation totals are calculated server-side. The form supports dynamically adding and removing item rows without a UI-imposed item limit.
+- Payments: record payments and view payment history and outstanding balances; payment order, amount, method, and remaining order balance are checked before recording.
+- Deliveries: schedule, edit, and view deliveries; the order, delivery type, required address, scheduled date, and status are validated.
+
+The business pages use the existing PrintFlow cards, forms, tables, buttons, and active navigation treatment. Scoped shared styles provide consistent search toolbars, form action alignment, action buttons, and horizontally scrollable tables on small screens. No navigation structure or shared application logic was changed.
+
+The implementation is limited to Jintu's business modules and their presentation. Authentication, shared layout/navigation logic, database configuration, and order management remain within Jeffy's core responsibilities. The approved schema and business workflow were not changed.
+
+## Implementation files
+
+The business module implementation and presentation changes are in:
+
+- pages/customers/index.php
+- pages/services/index.php
+- pages/quotations/index.php
+- pages/payments/index.php
+- pages/deliveries/index.php
+- public/css/style.css (scoped business-page presentation styles)
+
+## Verification performed
+
+The five business PHP pages passed PHP syntax checks. Local browser checks confirmed that each page renders with its matching active navigation item, and the table containers remain usable on a narrow viewport without widening the page. Customer, service, quotation, and delivery edit forms rendered; the payment form rendered.
+
+Quotation rows were added and removed in the browser, and quotations with 1, 3, 4, and 6 items were saved and reopened. Saved item counts and totals matched the server-calculated results for the test data.
+
+Submitting the existing search forms for customers, services, and quotations produced a PDO `HY093` invalid-parameter-number error during verification. Their repeated named-placeholder query patterns were present in the base revision and were not changed as part of this work. Search submission was therefore not verified as working.
+
 See also:
 
 - AGENTS.md

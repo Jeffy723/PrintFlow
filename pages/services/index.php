@@ -11,22 +11,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save'
     $description = trim((string) ($_POST['description'] ?? ''));
     $basePrice = (float) ($_POST['base_price'] ?? 0);
     $unit = trim((string) ($_POST['unit'] ?? 'piece'));
+    if ($unit === '') {
+        $unit = 'piece';
+    }
     $isActive = isset($_POST['is_active']) ? 1 : 0;
 
     if ($name === '') {
         flash('error', 'Service name is required.');
-    } else {
-        if ($id) {
-            $stmt = $pdo->prepare('UPDATE services SET name = :name, description = :description, base_price = :base_price, unit = :unit, is_active = :is_active WHERE id = :id');
-            $stmt->execute([':name' => $name, ':description' => $description, ':base_price' => $basePrice, ':unit' => $unit, ':is_active' => $isActive, ':id' => $id]);
-            flash('success', 'Service updated.');
-        } else {
-            $stmt = $pdo->prepare('INSERT INTO services (name, description, base_price, unit, is_active) VALUES (:name, :description, :base_price, :unit, :is_active)');
-            $stmt->execute([':name' => $name, ':description' => $description, ':base_price' => $basePrice, ':unit' => $unit, ':is_active' => $isActive]);
-            flash('success', 'Service created.');
-        }
         redirect('index.php?page=services');
     }
+
+    if ($basePrice < 0) {
+        flash('error', 'Base price cannot be negative.');
+        redirect('index.php?page=services');
+    }
+
+    $duplicateSql = $id ? 'SELECT id FROM services WHERE name = :name AND id != :id LIMIT 1' : 'SELECT id FROM services WHERE name = :name LIMIT 1';
+    $duplicateStmt = $pdo->prepare($duplicateSql);
+    $duplicateParams = [':name' => $name];
+    if ($id) {
+        $duplicateParams[':id'] = $id;
+    }
+    $duplicateStmt->execute($duplicateParams);
+    if ($duplicateStmt->fetch()) {
+        flash('error', 'Service name must be unique.');
+        redirect('index.php?page=services');
+    }
+
+    if ($id) {
+        $stmt = $pdo->prepare('UPDATE services SET name = :name, description = :description, base_price = :base_price, unit = :unit, is_active = :is_active WHERE id = :id');
+        $stmt->execute([':name' => $name, ':description' => $description, ':base_price' => $basePrice, ':unit' => $unit, ':is_active' => $isActive, ':id' => $id]);
+        flash('success', 'Service updated.');
+    } else {
+        $stmt = $pdo->prepare('INSERT INTO services (name, description, base_price, unit, is_active) VALUES (:name, :description, :base_price, :unit, :is_active)');
+        $stmt->execute([':name' => $name, ':description' => $description, ':base_price' => $basePrice, ':unit' => $unit, ':is_active' => $isActive]);
+        flash('success', 'Service created.');
+    }
+    redirect('index.php?page=services');
 }
 
 if (isset($_GET['delete']) && is_numeric($_GET['delete'])) {
@@ -55,7 +76,7 @@ if ($search !== '') {
 
 <div class="page-header">
     <h2>Services</h2>
-    <a class="btn" href="index.php?page=services">Refresh</a>
+    <a class="btn btn-secondary" href="index.php?page=services">Refresh</a>
 </div>
 
 <div class="card" style="margin-bottom: 24px;">
@@ -92,7 +113,7 @@ if ($search !== '') {
             </div>
         </div>
 
-        <div class="form-actions">
+        <div class="form-actions business-form-actions">
             <button class="btn" type="submit"><?php echo $editService ? 'Update service' : 'Save service'; ?></button>
             <?php if ($editService): ?>
                 <a class="btn btn-secondary" href="index.php?page=services">Cancel</a>
@@ -102,7 +123,7 @@ if ($search !== '') {
 </div>
 
 <div class="card">
-    <div class="search-wrap">
+    <div class="search-wrap business-search">
         <form method="get">
             <input type="hidden" name="page" value="services">
             <label>Search services</label>
@@ -110,7 +131,8 @@ if ($search !== '') {
         </form>
     </div>
 
-    <table class="table">
+    <div class="business-table-wrap">
+    <table class="table business-table">
         <thead>
             <tr>
                 <th>Name</th>
@@ -134,7 +156,7 @@ if ($search !== '') {
                                 <span class="pill pill-danger">Inactive</span>
                             <?php endif; ?>
                         </td>
-                        <td class="actions">
+                        <td class="actions business-actions">
                             <a class="btn btn-secondary" href="index.php?page=services&edit=<?php echo e($service['id']); ?>">Edit</a>
                             <a class="btn btn-danger" href="index.php?page=services&delete=<?php echo e($service['id']); ?>" data-confirm="Delete this service?">Delete</a>
                         </td>
@@ -149,4 +171,5 @@ if ($search !== '') {
             <?php endif; ?>
         </tbody>
     </table>
+    </div>
 </div>

@@ -55,7 +55,7 @@ if ($search !== '') {
 
 <div class="page-header">
     <h2>Customers</h2>
-    <a class="btn" href="index.php?page=customers">Refresh</a>
+    <a class="btn btn-secondary" href="index.php?page=customers">Refresh</a>
 </div>
 
 <div class="card" style="margin-bottom: 24px;">
@@ -85,7 +85,7 @@ if ($search !== '') {
             </div>
         </div>
 
-        <div class="form-actions">
+        <div class="form-actions business-form-actions">
             <button class="btn" type="submit"><?php echo $editCustomer ? 'Update customer' : 'Save customer'; ?></button>
             <?php if ($editCustomer): ?>
                 <a class="btn btn-secondary" href="index.php?page=customers">Cancel</a>
@@ -95,7 +95,7 @@ if ($search !== '') {
 </div>
 
 <div class="card">
-    <div class="search-wrap">
+    <div class="search-wrap business-search">
         <form method="get">
             <input type="hidden" name="page" value="customers">
             <label>Search customers</label>
@@ -103,7 +103,8 @@ if ($search !== '') {
         </form>
     </div>
 
-    <table class="table">
+    <div class="business-table-wrap">
+    <table class="table business-table">
         <thead>
             <tr>
                 <th>Name</th>
@@ -121,7 +122,7 @@ if ($search !== '') {
                         <td><?php echo e($customer['phone']); ?></td>
                         <td><?php echo e($customer['email'] ?: '-'); ?></td>
                         <td><?php echo e($customer['address'] ?: '-'); ?></td>
-                        <td class="actions">
+                        <td class="actions business-actions">
                             <a class="btn btn-secondary" href="index.php?page=customers&edit=<?php echo e($customer['id']); ?>">Edit</a>
                             <a class="btn btn-danger" href="index.php?page=customers&delete=<?php echo e($customer['id']); ?>" data-confirm="Delete this customer?">Delete</a>
                         </td>
@@ -136,4 +137,5 @@ if ($search !== '') {
             <?php endif; ?>
         </tbody>
     </table>
+    </div>
 </div>

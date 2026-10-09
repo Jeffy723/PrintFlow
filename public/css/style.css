@@ -309,6 +309,61 @@ textarea { min-height: 120px; }
     margin-bottom: 16px;
 }
 
+.business-search {
+    padding: 14px 16px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: #f8fafc;
+}
+
+.business-search form {
+    display: grid;
+    grid-template-columns: minmax(150px, 0.7fr) minmax(220px, 2fr);
+    align-items: center;
+    gap: 12px;
+}
+
+.business-search label {
+    margin: 0;
+}
+
+.business-search input {
+    max-width: 560px;
+}
+
+.business-form-actions {
+    justify-content: flex-end;
+}
+
+.business-table-wrap {
+    width: 100%;
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+}
+
+.business-table {
+    min-width: 640px;
+    margin: 0;
+}
+
+.business-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.business-actions a,
+.business-actions button {
+    margin: 0;
+}
+
+.business-actions .btn {
+    padding: 8px 12px;
+    white-space: nowrap;
+}
+
 .login-box {
     max-width: 420px;
     margin: 100px auto 0;
@@ -356,5 +411,20 @@ textarea { min-height: 120px; }
 
     .main-content {
         padding: 16px;
+    }
+}
+
+@media (max-width: 600px) {
+    .business-search form {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 8px;
+    }
+
+    .business-search input {
+        max-width: none;
+    }
+
+    .business-form-actions {
+        justify-content: flex-start;
     }
 }
