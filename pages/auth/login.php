@@ -61,6 +61,4 @@ $flash = getFlash();
             <button class="btn" type="submit">Login</button>
         </div>
     </form>
-
-    <p class="muted" style="margin-top: 16px;">Demo admin: admin@printflow.local / admin123</p>
 </div>
