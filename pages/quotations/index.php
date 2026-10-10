@@ -8,30 +8,52 @@ $pdo = getDatabaseConnection();
 $validStatuses = ['Draft', 'Sent', 'Accepted', 'Rejected', 'Expired'];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save') {
-    $id = isset($_POST['id']) && $_POST['id'] !== '' ? (int) $_POST['id'] : null;
-    $customerId = (int) ($_POST['customer_id'] ?? 0);
-    $quotationDate = trim((string) ($_POST['quotation_date'] ?? date('Y-m-d')));
-    $validUntil = trim((string) ($_POST['valid_until'] ?? ''));
-    $discount = (float) ($_POST['discount'] ?? 0);
+    if (!isValidCsrfToken($_POST['csrf_token'] ?? null)) {
+        flash('error', 'Your request could not be verified. Please try again.');
+        redirect('index.php?page=quotations');
+    }
+
+    $idInput = trim((string) ($_POST['id'] ?? ''));
+    $id = $idInput === '' ? null : filter_var($idInput, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+    $customerIdInput = trim((string) ($_POST['customer_id'] ?? ''));
+    $customerId = filter_var($customerIdInput, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+    $quotationDate = (string) ($_POST['quotation_date'] ?? date('Y-m-d'));
+    $validUntil = (string) ($_POST['valid_until'] ?? '');
+    $discountInput = (string) ($_POST['discount'] ?? '0');
     $notes = trim((string) ($_POST['notes'] ?? ''));
     $status = trim((string) ($_POST['status'] ?? 'Draft'));
-    $serviceIds = $_POST['service_id'] ?? [];
-    $quantities = $_POST['quantity'] ?? [];
+    $serviceIds = $_POST['service_id'] ?? null;
+    $quantities = $_POST['quantity'] ?? null;
+    $itemIds = $_POST['item_id'] ?? null;
+    $specifications = $_POST['specifications'] ?? null;
 
-    if ($customerId <= 0) {
+    $validDate = static function (string $date): bool {
+        $parsed = DateTimeImmutable::createFromFormat('!Y-m-d', $date);
+        $errors = DateTimeImmutable::getLastErrors();
+        return $parsed !== false
+            && ($errors === false || ($errors['warning_count'] === 0 && $errors['error_count'] === 0))
+            && $parsed->format('Y-m-d') === $date;
+    };
+
+    if ($id === false) {
+        flash('error', 'The selected quotation is invalid.');
+        redirect('index.php?page=quotations');
+    }
+    if ($customerId === false) {
         flash('error', 'A valid customer is required.');
         redirect('index.php?page=quotations');
     }
 
-    if ($validUntil === '') {
-        flash('error', 'Valid until date is required.');
+    if (!$validDate($quotationDate) || !$validDate($validUntil)) {
+        flash('error', 'Enter valid quotation and expiry dates.');
         redirect('index.php?page=quotations');
     }
 
-    if ($discount < 0) {
-        flash('error', 'Discount cannot be negative.');
+    if (preg_match('/\A\d+(?:\.\d{1,2})?\z/', $discountInput) !== 1 || (float) $discountInput > 99999999.99) {
+        flash('error', 'Discount must be a valid non-negative amount with up to two decimal places.');
         redirect('index.php?page=quotations');
     }
+    $discount = (float) $discountInput;
 
     if (!in_array($status, $validStatuses, true)) {
         flash('error', 'Quotation status is invalid.');
@@ -43,93 +65,159 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save'
         redirect('index.php?page=quotations');
     }
 
-    $items = [];
-    foreach ($serviceIds as $index => $serviceId) {
-        $cleanServiceId = (int) $serviceId;
-        $quantity = (int) ($quantities[$index] ?? 0);
+    if (!is_array($serviceIds) || !is_array($quantities) || !is_array($itemIds) || !is_array($specifications)
+        || count($serviceIds) !== count($quantities)
+        || count($serviceIds) !== count($itemIds)
+        || count($serviceIds) !== count($specifications)) {
+        flash('error', 'Quotation items are invalid. Please review the item rows and try again.');
+        redirect('index.php?page=quotations');
+    }
 
-        if ($cleanServiceId <= 0 || $quantity <= 0) {
+    $customerStmt = $pdo->prepare('SELECT id FROM customers WHERE id = :id LIMIT 1');
+    $customerStmt->execute([':id' => $customerId]);
+    if (!$customerStmt->fetch()) {
+        flash('error', 'The selected customer could not be found.');
+        redirect('index.php?page=quotations');
+    }
+
+    $existingItems = [];
+    if ($id !== null) {
+        $existingQuoteStmt = $pdo->prepare('SELECT id FROM quotations WHERE id = :id LIMIT 1');
+        $existingQuoteStmt->execute([':id' => $id]);
+        if (!$existingQuoteStmt->fetch()) {
+            flash('error', 'Quotation not found.');
+            redirect('index.php?page=quotations');
+        }
+        $existingItemsStmt = $pdo->prepare('SELECT qi.*, s.is_active FROM quotation_items qi JOIN services s ON s.id = qi.service_id WHERE qi.quotation_id = :quotation_id');
+        $existingItemsStmt->execute([':quotation_id' => $id]);
+        foreach ($existingItemsStmt->fetchAll() as $existingItem) {
+            $existingItems[(int) $existingItem['id']] = $existingItem;
+        }
+    }
+
+    $items = [];
+    $seenItemIds = [];
+    foreach ($serviceIds as $index => $serviceId) {
+        if (!is_scalar($serviceId) || !is_scalar($quantities[$index] ?? null)
+            || !is_scalar($itemIds[$index] ?? null) || !is_scalar($specifications[$index] ?? null)) {
+            flash('error', 'Quotation item values are invalid.');
+            redirect('index.php?page=quotations');
+        }
+        $serviceIdInput = (string) $serviceId;
+        $quantityInput = (string) $quantities[$index];
+        $itemIdInput = trim((string) $itemIds[$index]);
+        $itemSpecs = trim((string) $specifications[$index]);
+
+        if ($serviceIdInput === '' && $itemIdInput === '' && $itemSpecs === '') {
             continue;
+        }
+
+        $cleanServiceId = filter_var($serviceIdInput, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        $quantity = filter_var($quantityInput, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 2147483647]]);
+        $itemId = $itemIdInput === '' ? null : filter_var($itemIdInput, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        if ($cleanServiceId === false || $quantity === false || ($itemIdInput !== '' && $itemId === false)) {
+            flash('error', 'Each quotation item needs a valid service and positive whole-number quantity.');
+            redirect('index.php?page=quotations');
+        }
+        if ($itemId !== null) {
+            if ($id === null || !isset($existingItems[$itemId]) || isset($seenItemIds[$itemId])) {
+                flash('error', 'A quotation item does not belong to this quotation.');
+                redirect('index.php?page=quotations');
+            }
+            $seenItemIds[$itemId] = true;
         }
 
         $serviceStmt = $pdo->prepare('SELECT id, name, base_price, is_active FROM services WHERE id = :id LIMIT 1');
         $serviceStmt->execute([':id' => $cleanServiceId]);
         $service = $serviceStmt->fetch();
 
-        if (!$service || (int) $service['is_active'] !== 1) {
-            flash('error', 'Only active services can be used on a quotation.');
+        if (!$service) {
+            flash('error', 'A selected service could not be found.');
             redirect('index.php?page=quotations');
         }
 
-        $unitPrice = (float) $service['base_price'];
-        $totalPrice = $unitPrice * $quantity;
+        $isHistoricalInactiveService = (int) $service['is_active'] !== 1
+            && $itemId !== null
+            && (int) $existingItems[$itemId]['service_id'] === (int) $cleanServiceId;
+        if ((int) $service['is_active'] !== 1 && !$isHistoricalInactiveService) {
+            flash('error', 'Inactive services can only remain on their existing quotation item.');
+            redirect('index.php?page=quotations');
+        }
+
+        $unitPrice = $isHistoricalInactiveService
+            ? (float) $existingItems[$itemId]['unit_price']
+            : (float) $service['base_price'];
+        $totalPrice = round($unitPrice * $quantity, 2);
+        if (!is_finite($unitPrice) || $unitPrice < 0 || $totalPrice > 99999999.99) {
+            flash('error', 'A quotation item price exceeds the supported amount.');
+            redirect('index.php?page=quotations');
+        }
 
         $items[] = [
+            'id' => $itemId,
             'service_id' => $cleanServiceId,
-            'description' => $service['name'],
+            'description' => $isHistoricalInactiveService ? $existingItems[$itemId]['description'] : $service['name'],
             'quantity' => $quantity,
             'unit_price' => $unitPrice,
             'total_price' => $totalPrice,
+            'specifications' => $itemSpecs,
         ];
     }
 
     if ($items === []) {
-        flash('error', 'Add at least one active service item to the quotation.');
+        flash('error', 'Add at least one valid service item to the quotation.');
         redirect('index.php?page=quotations');
     }
 
-    $subtotal = array_sum(array_column($items, 'total_price'));
-    $totalAmount = max($subtotal - $discount, 0);
+    $subtotal = round(array_sum(array_column($items, 'total_price')), 2);
+    if ($subtotal > 99999999.99 || $discount > $subtotal) {
+        flash('error', 'Discount cannot exceed the quotation subtotal, and totals must fit the supported amount.');
+        redirect('index.php?page=quotations');
+    }
+    $totalAmount = round($subtotal - $discount, 2);
 
-    if ($id) {
-        $stmt = $pdo->prepare('UPDATE quotations SET customer_id = :customer_id, quotation_date = :quotation_date, valid_until = :valid_until, status = :status, subtotal = :subtotal, discount = :discount, total_amount = :total_amount, notes = :notes WHERE id = :id');
-        $stmt->execute([
-            ':customer_id' => $customerId,
-            ':quotation_date' => $quotationDate,
-            ':valid_until' => $validUntil,
-            ':status' => $status,
-            ':subtotal' => $subtotal,
-            ':discount' => $discount,
-            ':total_amount' => $totalAmount,
-            ':notes' => $notes,
-            ':id' => $id,
-        ]);
+    try {
+        $pdo->beginTransaction();
+        if ($id !== null) {
+            $lockStmt = $pdo->prepare('SELECT id FROM quotations WHERE id = :id FOR UPDATE');
+            $lockStmt->execute([':id' => $id]);
+            if (!$lockStmt->fetch()) {
+                throw new RuntimeException('Quotation no longer exists.');
+            }
 
-        $pdo->prepare('DELETE FROM quotation_items WHERE quotation_id = :quotation_id')->execute([':quotation_id' => $id]);
-        $itemStmt = $pdo->prepare('INSERT INTO quotation_items (quotation_id, service_id, description, quantity, unit_price, total_price, specifications) VALUES (:quotation_id, :service_id, :description, :quantity, :unit_price, :total_price, :specifications)');
-
-        foreach ($items as $item) {
-            $itemStmt->execute([
-                ':quotation_id' => $id,
-                ':service_id' => $item['service_id'],
-                ':description' => $item['description'],
-                ':quantity' => $item['quantity'],
-                ':unit_price' => $item['unit_price'],
-                ':total_price' => $item['total_price'],
-                ':specifications' => '',
+            $stmt = $pdo->prepare('UPDATE quotations SET customer_id = :customer_id, quotation_date = :quotation_date, valid_until = :valid_until, status = :status, subtotal = :subtotal, discount = :discount, total_amount = :total_amount, notes = :notes WHERE id = :id');
+            $stmt->execute([
+                ':customer_id' => $customerId,
+                ':quotation_date' => $quotationDate,
+                ':valid_until' => $validUntil,
+                ':status' => $status,
+                ':subtotal' => $subtotal,
+                ':discount' => $discount,
+                ':total_amount' => $totalAmount,
+                ':notes' => $notes,
+                ':id' => $id,
             ]);
+            $pdo->prepare('DELETE FROM quotation_items WHERE quotation_id = :quotation_id')->execute([':quotation_id' => $id]);
+            $quotationId = $id;
+        } else {
+            $quoteNo = 'Q-' . date('Ymd') . '-' . strtoupper(bin2hex(random_bytes(4)));
+            $stmt = $pdo->prepare('INSERT INTO quotations (quotation_number, customer_id, created_by, quotation_date, valid_until, status, subtotal, discount, total_amount, notes) VALUES (:quotation_number, :customer_id, :created_by, :quotation_date, :valid_until, :status, :subtotal, :discount, :total_amount, :notes)');
+            $stmt->execute([
+                ':quotation_number' => $quoteNo,
+                ':customer_id' => $customerId,
+                ':created_by' => currentUser()['id'],
+                ':quotation_date' => $quotationDate,
+                ':valid_until' => $validUntil,
+                ':status' => $status,
+                ':subtotal' => $subtotal,
+                ':discount' => $discount,
+                ':total_amount' => $totalAmount,
+                ':notes' => $notes,
+            ]);
+            $quotationId = (int) $pdo->lastInsertId();
         }
 
-        flash('success', 'Quotation updated successfully.');
-    } else {
-        $quoteNo = 'Q-' . date('Ymd') . '-' . substr((string) time(), -4);
-        $stmt = $pdo->prepare('INSERT INTO quotations (quotation_number, customer_id, created_by, quotation_date, valid_until, status, subtotal, discount, total_amount, notes) VALUES (:quotation_number, :customer_id, :created_by, :quotation_date, :valid_until, :status, :subtotal, :discount, :total_amount, :notes)');
-        $stmt->execute([
-            ':quotation_number' => $quoteNo,
-            ':customer_id' => $customerId,
-            ':created_by' => currentUser()['id'],
-            ':quotation_date' => $quotationDate,
-            ':valid_until' => $validUntil,
-            ':status' => $status,
-            ':subtotal' => $subtotal,
-            ':discount' => $discount,
-            ':total_amount' => $totalAmount,
-            ':notes' => $notes,
-        ]);
-
-        $quotationId = (int) $pdo->lastInsertId();
         $itemStmt = $pdo->prepare('INSERT INTO quotation_items (quotation_id, service_id, description, quantity, unit_price, total_price, specifications) VALUES (:quotation_id, :service_id, :description, :quantity, :unit_price, :total_price, :specifications)');
-
         foreach ($items as $item) {
             $itemStmt->execute([
                 ':quotation_id' => $quotationId,
@@ -138,13 +226,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save'
                 ':quantity' => $item['quantity'],
                 ':unit_price' => $item['unit_price'],
                 ':total_price' => $item['total_price'],
-                ':specifications' => '',
+                ':specifications' => $item['specifications'],
             ]);
         }
-
-        flash('success', 'Quotation created successfully.');
+        $pdo->commit();
+        flash('success', $id !== null ? 'Quotation updated successfully.' : 'Quotation created successfully.');
+    } catch (Throwable $exception) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        error_log('Quotation save error: ' . $exception->getMessage());
+        flash('error', 'Quotation could not be saved. No changes were kept; please review the details and try again.');
     }
-
     redirect('index.php?page=quotations');
 }
 
@@ -177,15 +270,16 @@ if ($editId !== null) {
     $editQuotation = $editStmt->fetch();
 
     if ($editQuotation) {
-        $editItemsStmt = $pdo->prepare('SELECT * FROM quotation_items WHERE quotation_id = :quotation_id ORDER BY id ASC');
+        $editItemsStmt = $pdo->prepare('SELECT qi.*, s.is_active FROM quotation_items qi JOIN services s ON s.id = qi.service_id WHERE qi.quotation_id = :quotation_id ORDER BY qi.id ASC');
         $editItemsStmt->execute([':quotation_id' => $editId]);
         $editItems = $editItemsStmt->fetchAll();
     }
 }
 
 if ($search !== '') {
-    $stmt = $pdo->prepare('SELECT q.*, c.name AS customer_name FROM quotations q JOIN customers c ON c.id = q.customer_id WHERE q.quotation_number LIKE :q OR c.name LIKE :q OR q.status LIKE :q ORDER BY q.created_at DESC');
-    $stmt->execute([':q' => '%' . $search . '%']);
+    $stmt = $pdo->prepare('SELECT q.*, c.name AS customer_name FROM quotations q JOIN customers c ON c.id = q.customer_id WHERE q.quotation_number LIKE :number_q OR c.name LIKE :customer_q OR q.status LIKE :status_q ORDER BY q.created_at DESC');
+    $pattern = '%' . $search . '%';
+    $stmt->execute([':number_q' => $pattern, ':customer_q' => $pattern, ':status_q' => $pattern]);
     $quotations = $stmt->fetchAll();
 } else {
     $quotations = $pdo->query('SELECT q.*, c.name AS customer_name FROM quotations q JOIN customers c ON c.id = q.customer_id ORDER BY q.created_at DESC')->fetchAll();
@@ -201,6 +295,7 @@ if ($search !== '') {
     <h3><?php echo $editQuotation ? 'Edit quotation' : 'Create quotation'; ?></h3>
     <form method="post">
         <input type="hidden" name="action" value="save">
+        <input type="hidden" name="csrf_token" value="<?php echo e(csrfToken()); ?>">
         <?php if ($editQuotation): ?>
             <input type="hidden" name="id" value="<?php echo e($editQuotation['id']); ?>">
         <?php endif; ?>
@@ -233,7 +328,7 @@ if ($search !== '') {
             </div>
             <div>
                 <label>Discount</label>
-                <input type="number" name="discount" step="0.01" min="0" value="<?php echo e($editQuotation['discount'] ?? '0'); ?>">
+                <input type="number" name="discount" step="0.01" min="0" max="99999999.99" value="<?php echo e($editQuotation['discount'] ?? '0'); ?>">
             </div>
             <div style="grid-column: 1 / -1;">
                 <label>Notes</label>
@@ -264,7 +359,7 @@ if ($search !== '') {
 
             .quotation-item-grid {
                 display: grid;
-                grid-template-columns: minmax(220px, 2.2fr) minmax(90px, 0.8fr) minmax(120px, 1fr) minmax(120px, 1fr) 88px;
+                grid-template-columns: minmax(180px, 2fr) minmax(80px, 0.7fr) minmax(140px, 1.5fr) minmax(110px, 1fr) minmax(110px, 1fr) 88px;
                 align-items: center;
                 gap: 12px;
             }
@@ -336,6 +431,7 @@ if ($search !== '') {
                 }
 
                 .quotation-item-service,
+                .quotation-item-specifications,
                 .quotation-item-remove-cell {
                     grid-column: 1 / -1;
                 }
@@ -378,6 +474,7 @@ if ($search !== '') {
             <div class="quotation-item-grid quotation-item-labels" aria-hidden="true">
                 <span>Service</span>
                 <span>Quantity</span>
+                <span>Specifications</span>
                 <span>Unit Price</span>
                 <span>Item Total</span>
                 <span>Remove</span>
@@ -385,6 +482,7 @@ if ($search !== '') {
             <div id="quotation-items">
             <?php foreach ($itemRows as $itemRow): ?>
                 <div class="quotation-item-grid quotation-item-row">
+                    <input type="hidden" name="item_id[]" value="<?php echo e((string) ($itemRow['id'] ?? '')); ?>">
                     <div class="quotation-item-service">
                         <label>Service</label>
                         <select name="service_id[]">
@@ -392,11 +490,18 @@ if ($search !== '') {
                             <?php foreach ($services as $service): ?>
                                 <option value="<?php echo e($service['id']); ?>" data-price="<?php echo e($service['base_price']); ?>" <?php echo ((string) ($itemRow['service_id'] ?? '') === (string) $service['id']) ? 'selected' : ''; ?>><?php echo e($service['name']); ?> - <?php echo e(money((float) $service['base_price'])); ?></option>
                             <?php endforeach; ?>
+                            <?php if (isset($itemRow['id']) && isset($itemRow['is_active']) && (int) $itemRow['is_active'] !== 1): ?>
+                                <option value="<?php echo e($itemRow['service_id']); ?>" data-price="<?php echo e($itemRow['unit_price']); ?>" selected><?php echo e($itemRow['description']); ?> (Inactive - historical item)</option>
+                            <?php endif; ?>
                         </select>
                     </div>
                     <div class="quotation-item-quantity">
                         <label>Quantity</label>
                         <input type="number" name="quantity[]" min="1" step="1" value="<?php echo e((string) ($itemRow['quantity'] ?? 1)); ?>">
+                    </div>
+                    <div class="quotation-item-specifications">
+                        <label>Specifications</label>
+                        <input type="text" name="specifications[]" value="<?php echo e((string) ($itemRow['specifications'] ?? '')); ?>" maxlength="2000">
                     </div>
                     <div class="quotation-item-price">
                         <span class="quotation-item-mobile-label">Unit Price</span>
@@ -460,7 +565,9 @@ if ($search !== '') {
     addQuotationItemButton.addEventListener('click', () => {
         const newRow = quotationItems.querySelector('.quotation-item-row').cloneNode(true);
         newRow.querySelector('select[name="service_id[]"]').selectedIndex = 0;
+        newRow.querySelector('input[name="item_id[]"]').value = '';
         newRow.querySelector('input[name="quantity[]"]').value = '1';
+        newRow.querySelector('input[name="specifications[]"]').value = '';
         quotationItems.appendChild(newRow);
         updateQuotationItemRemoveButtons();
         updateQuotationItemPrices(newRow);
@@ -526,6 +633,7 @@ if ($search !== '') {
                     <tr>
                         <th>Service</th>
                         <th>Qty</th>
+                        <th>Specifications</th>
                         <th>Unit Price</th>
                         <th>Total</th>
                     </tr>
@@ -536,13 +644,14 @@ if ($search !== '') {
                             <tr>
                                 <td><?php echo e($item['description']); ?></td>
                                 <td><?php echo e((string) $item['quantity']); ?></td>
+                                <td><?php echo e($item['specifications'] ?: '-'); ?></td>
                                 <td><?php echo e(money((float) $item['unit_price'])); ?></td>
                                 <td><?php echo e(money((float) $item['total_price'])); ?></td>
                             </tr>
                         <?php endforeach; ?>
                     <?php else: ?>
                         <tr>
-                            <td colspan="4"><p class="empty-state">No items found.</p></td>
+                            <td colspan="5"><p class="empty-state">No items found.</p></td>
                         </tr>
                     <?php endif; ?>
                 </tbody>

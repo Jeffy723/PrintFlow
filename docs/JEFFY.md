@@ -65,6 +65,24 @@ Order states that Jeffy should honor:
 - Completed
 - Cancelled
 
+### Order Management role permissions
+
+These permissions apply only to Order Management. They do not define or change permissions for customers, services, quotations, payments, or deliveries; those modules remain under their respective owners and will be defined separately.
+
+Admin:
+
+- May view orders
+- May create orders
+- May advance orders through the valid status lifecycle
+- May cancel orders when allowed by the order cancellation rules
+
+Staff:
+
+- May view orders
+- May create orders
+- May not advance order status
+- May not cancel orders
+
 ## Dependencies on Jintu's modules
 
 Jeffy depends on Jintu's business modules when integration requires them, especially for:

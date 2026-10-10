@@ -7,58 +7,90 @@ $pdo = getDatabaseConnection();
 $validPaymentMethods = ['Cash', 'UPI', 'Card', 'Bank Transfer'];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save') {
-    $orderId = (int) ($_POST['order_id'] ?? 0);
-    $amount = (float) ($_POST['amount'] ?? 0);
+    if (!isValidCsrfToken($_POST['csrf_token'] ?? null)) {
+        flash('error', 'Your request could not be verified. Please try again.');
+        redirect('index.php?page=payments');
+    }
+
+    $orderId = filter_var(trim((string) ($_POST['order_id'] ?? '')), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+    $amountInput = (string) ($_POST['amount'] ?? '');
     $paymentMethod = trim((string) ($_POST['payment_method'] ?? 'Cash'));
-    $paymentDate = trim((string) ($_POST['payment_date'] ?? date('Y-m-d')));
+    $paymentDate = (string) ($_POST['payment_date'] ?? date('Y-m-d'));
     $referenceNumber = trim((string) ($_POST['reference_number'] ?? ''));
     $notes = trim((string) ($_POST['notes'] ?? ''));
 
-    if ($orderId <= 0) {
+    if ($orderId === false) {
         flash('error', 'Select a valid order to record a payment.');
         redirect('index.php?page=payments');
     }
 
-    if ($amount <= 0) {
+    if (preg_match('/\A\d+(?:\.\d{1,2})?\z/', $amountInput) !== 1 || strlen(explode('.', $amountInput)[0]) > 8) {
+        flash('error', 'Enter a valid payment amount with up to two decimal places.');
+        redirect('index.php?page=payments');
+    }
+    [$wholeAmount, $fractionAmount] = array_pad(explode('.', $amountInput, 2), 2, '0');
+    $amountCents = ((int) $wholeAmount * 100) + (int) str_pad($fractionAmount, 2, '0');
+    if ($amountCents <= 0) {
         flash('error', 'Payment amount must be greater than zero.');
         redirect('index.php?page=payments');
     }
+    $amount = $amountCents / 100;
 
     if (!in_array($paymentMethod, $validPaymentMethods, true)) {
         flash('error', 'Payment method is invalid.');
         redirect('index.php?page=payments');
     }
 
-    $order = $pdo->prepare('SELECT total_amount FROM orders WHERE id = :id LIMIT 1');
-    $order->execute([':id' => $orderId]);
-    $orderData = $order->fetch();
-    if (!$orderData) {
-        flash('error', 'Order not found.');
+    $parsedDate = DateTimeImmutable::createFromFormat('!Y-m-d', $paymentDate);
+    $dateErrors = DateTimeImmutable::getLastErrors();
+    if ($parsedDate === false
+        || ($dateErrors !== false && ($dateErrors['warning_count'] > 0 || $dateErrors['error_count'] > 0))
+        || $parsedDate->format('Y-m-d') !== $paymentDate) {
+        flash('error', 'Enter a valid payment date.');
         redirect('index.php?page=payments');
     }
 
-    $paidStmt = $pdo->prepare('SELECT COALESCE(SUM(amount), 0) AS total_paid FROM payments WHERE order_id = :order_id');
-    $paidStmt->execute([':order_id' => $orderId]);
-    $totalPaid = (float) $paidStmt->fetchColumn();
-    $remainingBalance = (float) $orderData['total_amount'] - $totalPaid;
+    try {
+        $pdo->beginTransaction();
+        $order = $pdo->prepare('SELECT total_amount FROM orders WHERE id = :id FOR UPDATE');
+        $order->execute([':id' => $orderId]);
+        $orderData = $order->fetch();
+        if (!$orderData) {
+            throw new DomainException('The selected order was not found.');
+        }
 
-    if ($amount > $remainingBalance) {
-        flash('error', 'Payment total cannot exceed the order total.');
-        redirect('index.php?page=payments');
+        $paidStmt = $pdo->prepare('SELECT COALESCE(SUM(amount), 0) AS total_paid FROM payments WHERE order_id = :order_id');
+        $paidStmt->execute([':order_id' => $orderId]);
+        $totalPaid = (float) $paidStmt->fetchColumn();
+        $remainingBalance = (float) $orderData['total_amount'] - $totalPaid;
+        if ($amount > $remainingBalance + 0.00001) {
+            throw new DomainException('Payment total cannot exceed the order total.');
+        }
+
+        $stmt = $pdo->prepare('INSERT INTO payments (order_id, amount, payment_method, payment_date, reference_number, notes, created_by) VALUES (:order_id, :amount, :payment_method, :payment_date, :reference_number, :notes, :created_by)');
+        $stmt->execute([
+            ':order_id' => $orderId,
+            ':amount' => $amount,
+            ':payment_method' => $paymentMethod,
+            ':payment_date' => $paymentDate,
+            ':reference_number' => $referenceNumber,
+            ':notes' => $notes,
+            ':created_by' => currentUser()['id'],
+        ]);
+        $pdo->commit();
+        flash('success', 'Payment recorded successfully.');
+    } catch (DomainException $exception) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        flash('error', $exception->getMessage());
+    } catch (Throwable $exception) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        error_log('Payment save error: ' . $exception->getMessage());
+        flash('error', 'Payment could not be recorded. Please try again.');
     }
-
-    $stmt = $pdo->prepare('INSERT INTO payments (order_id, amount, payment_method, payment_date, reference_number, notes, created_by) VALUES (:order_id, :amount, :payment_method, :payment_date, :reference_number, :notes, :created_by)');
-    $stmt->execute([
-        ':order_id' => $orderId,
-        ':amount' => $amount,
-        ':payment_method' => $paymentMethod,
-        ':payment_date' => $paymentDate,
-        ':reference_number' => $referenceNumber,
-        ':notes' => $notes,
-        ':created_by' => currentUser()['id'],
-    ]);
-
-    flash('success', 'Payment recorded successfully.');
     redirect('index.php?page=payments');
 }
 
@@ -108,6 +140,7 @@ $payments = $pdo->query('SELECT p.*, o.order_number, c.name AS customer_name FRO
     <h3>Record payment</h3>
     <form method="post">
         <input type="hidden" name="action" value="save">
+        <input type="hidden" name="csrf_token" value="<?php echo e(csrfToken()); ?>">
         <div class="form-grid">
             <div>
                 <label>Order</label>

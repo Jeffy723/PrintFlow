@@ -9,23 +9,26 @@ $validDeliveryTypes = ['Pickup', 'Delivery'];
 $validStatuses = ['Pending', 'Out for Delivery', 'Delivered', 'Cancelled'];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save') {
-    $id = isset($_POST['id']) && $_POST['id'] !== '' ? (int) $_POST['id'] : null;
-    $orderId = (int) ($_POST['order_id'] ?? 0);
-    $deliveryType = trim((string) ($_POST['delivery_type'] ?? 'Pickup'));
-    $address = trim((string) ($_POST['address'] ?? ''));
-    $scheduledDate = trim((string) ($_POST['scheduled_date'] ?? date('Y-m-d')));
-    $status = trim((string) ($_POST['status'] ?? 'Pending'));
-    $notes = trim((string) ($_POST['notes'] ?? ''));
-
-    if ($orderId <= 0) {
-        flash('error', 'Choose a valid order.');
+    if (!isValidCsrfToken($_POST['csrf_token'] ?? null)) {
+        flash('error', 'Your request could not be verified. Please try again.');
         redirect('index.php?page=deliveries');
     }
 
-    $orderExists = $pdo->prepare('SELECT id FROM orders WHERE id = :id LIMIT 1');
-    $orderExists->execute([':id' => $orderId]);
-    if (!$orderExists->fetch()) {
-        flash('error', 'Order not found.');
+    $idInput = trim((string) ($_POST['id'] ?? ''));
+    $id = $idInput === '' ? null : filter_var($idInput, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+    $orderId = filter_var(trim((string) ($_POST['order_id'] ?? '')), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+    $deliveryType = trim((string) ($_POST['delivery_type'] ?? 'Pickup'));
+    $address = trim((string) ($_POST['address'] ?? ''));
+    $scheduledDate = (string) ($_POST['scheduled_date'] ?? date('Y-m-d'));
+    $status = trim((string) ($_POST['status'] ?? 'Pending'));
+    $notes = trim((string) ($_POST['notes'] ?? ''));
+
+    if ($id === false) {
+        flash('error', 'The selected delivery is invalid.');
+        redirect('index.php?page=deliveries');
+    }
+    if ($orderId === false) {
+        flash('error', 'Choose a valid order.');
         redirect('index.php?page=deliveries');
     }
 
@@ -39,46 +42,149 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save'
         redirect('index.php?page=deliveries');
     }
 
-    if ($scheduledDate === '') {
-        flash('error', 'Scheduled date is required.');
-        redirect('index.php?page=deliveries');
-    }
-
     if (!in_array($status, $validStatuses, true)) {
         flash('error', 'Delivery status is invalid.');
         redirect('index.php?page=deliveries');
     }
 
-    $deliveredAt = null;
-    if ($status === 'Delivered') {
-        $deliveredAt = date('Y-m-d H:i:s');
+    $parsedDate = DateTimeImmutable::createFromFormat('!Y-m-d', $scheduledDate);
+    $dateErrors = DateTimeImmutable::getLastErrors();
+    if ($parsedDate === false
+        || ($dateErrors !== false && ($dateErrors['warning_count'] > 0 || $dateErrors['error_count'] > 0))
+        || $parsedDate->format('Y-m-d') !== $scheduledDate) {
+        flash('error', 'Enter a valid scheduled date.');
+        redirect('index.php?page=deliveries');
     }
 
-    if ($id) {
-        $stmt = $pdo->prepare('UPDATE deliveries SET order_id = :order_id, delivery_type = :delivery_type, address = :address, scheduled_date = :scheduled_date, status = :status, delivered_at = :delivered_at, notes = :notes WHERE id = :id');
-        $stmt->execute([
-            ':order_id' => $orderId,
-            ':delivery_type' => $deliveryType,
-            ':address' => $address,
-            ':scheduled_date' => $scheduledDate,
-            ':status' => $status,
-            ':delivered_at' => $deliveredAt,
-            ':notes' => $notes,
-            ':id' => $id,
-        ]);
-        flash('success', 'Delivery updated successfully.');
-    } else {
-        $stmt = $pdo->prepare('INSERT INTO deliveries (order_id, delivery_type, address, scheduled_date, status, delivered_at, notes) VALUES (:order_id, :delivery_type, :address, :scheduled_date, :status, :delivered_at, :notes)');
-        $stmt->execute([
-            ':order_id' => $orderId,
-            ':delivery_type' => $deliveryType,
-            ':address' => $address,
-            ':scheduled_date' => $scheduledDate,
-            ':status' => $status,
-            ':delivered_at' => $deliveredAt,
-            ':notes' => $notes,
-        ]);
-        flash('success', 'Delivery scheduled successfully.');
+    try {
+        $pdo->beginTransaction();
+        $orderStmt = $pdo->prepare('SELECT id, status, total_amount FROM orders WHERE id = :id FOR UPDATE');
+        $orderStmt->execute([':id' => $orderId]);
+        $orderData = $orderStmt->fetch();
+        if (!$orderData) {
+            throw new DomainException('The selected order was not found.');
+        }
+
+        $previousDelivery = null;
+        if ($id !== null) {
+            $existingStmt = $pdo->prepare('SELECT order_id, delivery_type, status, delivered_at FROM deliveries WHERE id = :id FOR UPDATE');
+            $existingStmt->execute([':id' => $id]);
+            $previousDelivery = $existingStmt->fetch();
+            if (!$previousDelivery) {
+                throw new DomainException('The selected delivery was not found.');
+            }
+        }
+
+        $wasDeliveredForSameOrder = $previousDelivery
+            && $previousDelivery['status'] === 'Delivered'
+            && (int) $previousDelivery['order_id'] === (int) $orderId;
+        if ($previousDelivery && (int) $previousDelivery['order_id'] !== (int) $orderId) {
+            throw new DomainException('An existing delivery cannot be reassigned to a different order.');
+        }
+
+        if ($previousDelivery && $previousDelivery['delivery_type'] !== $deliveryType
+            && ($previousDelivery['status'] !== 'Pending' || $status !== 'Pending')) {
+            throw new DomainException('Delivery type cannot be changed after dispatch or cancellation.');
+        }
+
+        if ($previousDelivery === null && $status !== 'Pending') {
+            throw new DomainException('A new delivery must be scheduled as Pending before it can be dispatched.');
+        }
+
+        if ($previousDelivery === null) {
+            if (in_array($orderData['status'], ['Completed', 'Cancelled'], true)) {
+                throw new DomainException('A delivery cannot be scheduled for a completed or cancelled order.');
+            }
+
+            $existingDeliveryStmt = $pdo->prepare('SELECT id FROM deliveries WHERE order_id = :order_id LIMIT 1 FOR UPDATE');
+            $existingDeliveryStmt->execute([':order_id' => $orderId]);
+            if ($existingDeliveryStmt->fetch()) {
+                throw new DomainException('This order already has a fulfilment record. Edit that record instead of creating a duplicate.');
+            }
+        }
+
+        if ($previousDelivery && $status !== $previousDelivery['status']) {
+            $allowedNextStatuses = [
+                'Pending' => ['Out for Delivery', 'Cancelled'],
+                'Out for Delivery' => ['Delivered', 'Cancelled'],
+                'Delivered' => [],
+                'Cancelled' => [],
+            ];
+
+            if (!in_array($status, $allowedNextStatuses[$previousDelivery['status']] ?? [], true)) {
+                throw new DomainException(
+                    'A delivery cannot move from ' . $previousDelivery['status'] . ' to ' . $status . '.'
+                );
+            }
+
+            if (in_array($status, ['Out for Delivery', 'Delivered'], true)
+                && $orderData['status'] !== 'Ready') {
+                $message = $status === 'Out for Delivery'
+                    ? 'The order must be Ready before the delivery can be dispatched. Current order status: ' . $orderData['status'] . '.'
+                    : 'The order must be Ready before its delivery can be marked Delivered. Current order status: ' . $orderData['status'] . '.';
+                throw new DomainException($message);
+            }
+        }
+
+        if ($status === 'Delivered' && $previousDelivery && $previousDelivery['status'] !== 'Delivered') {
+            $paidStmt = $pdo->prepare('SELECT COALESCE(SUM(amount), 0) FROM payments WHERE order_id = :order_id');
+            $paidStmt->execute([':order_id' => $orderId]);
+            $totalAmountCents = (int) round((float) $orderData['total_amount'] * 100);
+            $totalPaidCents = (int) round((float) $paidStmt->fetchColumn() * 100);
+            if ($totalPaidCents < $totalAmountCents) {
+                $outstandingCents = $totalAmountCents - $totalPaidCents;
+                throw new DomainException(
+                    'The order must be fully paid before it can be marked Delivered. Outstanding balance: '
+                    . money($outstandingCents / 100) . '.'
+                );
+            }
+        }
+
+        if ($status === 'Delivered') {
+            $deliveredAt = $wasDeliveredForSameOrder && $previousDelivery['delivered_at'] !== null
+                ? $previousDelivery['delivered_at']
+                : date('Y-m-d H:i:s');
+        } else {
+            $deliveredAt = $previousDelivery['delivered_at'] ?? null;
+        }
+
+        if ($id !== null) {
+            $stmt = $pdo->prepare('UPDATE deliveries SET order_id = :order_id, delivery_type = :delivery_type, address = :address, scheduled_date = :scheduled_date, status = :status, delivered_at = :delivered_at, notes = :notes WHERE id = :id');
+            $stmt->execute([
+                ':order_id' => $orderId,
+                ':delivery_type' => $deliveryType,
+                ':address' => $address,
+                ':scheduled_date' => $scheduledDate,
+                ':status' => $status,
+                ':delivered_at' => $deliveredAt,
+                ':notes' => $notes,
+                ':id' => $id,
+            ]);
+        } else {
+            $stmt = $pdo->prepare('INSERT INTO deliveries (order_id, delivery_type, address, scheduled_date, status, delivered_at, notes) VALUES (:order_id, :delivery_type, :address, :scheduled_date, :status, :delivered_at, :notes)');
+            $stmt->execute([
+                ':order_id' => $orderId,
+                ':delivery_type' => $deliveryType,
+                ':address' => $address,
+                ':scheduled_date' => $scheduledDate,
+                ':status' => $status,
+                ':delivered_at' => $deliveredAt,
+                ':notes' => $notes,
+            ]);
+        }
+        $pdo->commit();
+        flash('success', $id !== null ? 'Delivery updated successfully.' : 'Delivery scheduled successfully.');
+    } catch (DomainException $exception) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        flash('error', $exception->getMessage());
+    } catch (Throwable $exception) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        error_log('Delivery save error: ' . $exception->getMessage());
+        flash('error', 'Delivery could not be saved. Please review the details and try again.');
     }
 
     redirect('index.php?page=deliveries');
@@ -98,9 +204,39 @@ if ($viewId !== null) {
 
 $editDelivery = null;
 if ($editId !== null) {
-    $editStmt = $pdo->prepare('SELECT d.*, o.order_number, c.name AS customer_name FROM deliveries d JOIN orders o ON o.id = d.order_id JOIN customers c ON c.id = o.customer_id WHERE d.id = :id LIMIT 1');
+    $editStmt = $pdo->prepare(
+        'SELECT d.*, o.order_number, o.status AS order_status, o.total_amount,
+            (SELECT COALESCE(SUM(p.amount), 0) FROM payments p WHERE p.order_id = o.id) AS total_paid,
+            c.name AS customer_name
+        FROM deliveries d
+        JOIN orders o ON o.id = d.order_id
+        JOIN customers c ON c.id = o.customer_id
+        WHERE d.id = :id LIMIT 1'
+    );
     $editStmt->execute([':id' => $editId]);
     $editDelivery = $editStmt->fetch();
+}
+
+$availableStatusOptions = ['Pending'];
+if ($editDelivery) {
+    $availableStatusOptions = [$editDelivery['status']];
+    $nextDeliveryStatuses = [
+        'Pending' => ['Out for Delivery', 'Cancelled'],
+        'Out for Delivery' => ['Delivered', 'Cancelled'],
+        'Delivered' => [],
+        'Cancelled' => [],
+    ];
+    foreach ($nextDeliveryStatuses[$editDelivery['status']] ?? [] as $nextDeliveryStatus) {
+        if ($nextDeliveryStatus === 'Out for Delivery' && $editDelivery['order_status'] !== 'Ready') {
+            continue;
+        }
+        if ($nextDeliveryStatus === 'Delivered'
+            && ($editDelivery['order_status'] !== 'Ready'
+                || (float) $editDelivery['total_paid'] < (float) $editDelivery['total_amount'])) {
+            continue;
+        }
+        $availableStatusOptions[] = $nextDeliveryStatus;
+    }
 }
 
 $deliveries = $pdo->query('SELECT d.*, o.order_number, c.name AS customer_name FROM deliveries d JOIN orders o ON o.id = d.order_id JOIN customers c ON c.id = o.customer_id ORDER BY d.scheduled_date DESC')->fetchAll();
@@ -115,6 +251,7 @@ $deliveries = $pdo->query('SELECT d.*, o.order_number, c.name AS customer_name F
     <h3><?php echo $editDelivery ? 'Edit delivery' : 'Schedule delivery'; ?></h3>
     <form method="post">
         <input type="hidden" name="action" value="save">
+        <input type="hidden" name="csrf_token" value="<?php echo e(csrfToken()); ?>">
         <?php if ($editDelivery): ?>
             <input type="hidden" name="id" value="<?php echo e($editDelivery['id']); ?>">
         <?php endif; ?>
@@ -144,10 +281,11 @@ $deliveries = $pdo->query('SELECT d.*, o.order_number, c.name AS customer_name F
             <div>
                 <label>Status</label>
                 <select name="status">
-                    <?php foreach ($validStatuses as $statusOption): ?>
+                    <?php foreach ($availableStatusOptions as $statusOption): ?>
                         <option value="<?php echo e($statusOption); ?>" <?php echo (($editDelivery['status'] ?? 'Pending') === $statusOption) ? 'selected' : ''; ?>><?php echo e($statusOption); ?></option>
                     <?php endforeach; ?>
                 </select>
+                <small>Dispatch requires a Ready order. Marking it Delivered also requires the order to be fully paid.</small>
             </div>
             <div style="grid-column: 1 / -1;">
                 <label>Address</label>
