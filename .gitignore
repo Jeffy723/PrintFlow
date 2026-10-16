@@ -5,6 +5,7 @@
 *credentials*
 *secret*
 config/database.local.php
+config/database.production.php
 
 # IDE and editor files
 .vscode/

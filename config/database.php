@@ -1,27 +1,37 @@
+
 <?php
-
-declare(strict_types=1);
-
 function getDatabaseConnection(): PDO
 {
-    $localConfigFile = __DIR__ . '/database.local.php';
+    $hostName = strtolower(
+        explode(':', $_SERVER['HTTP_HOST'] ?? 'localhost')[0]
+    );
 
-    $localConfig = [];
+    $isLocal = in_array(
+        $hostName,
+        ['localhost', '127.0.0.1'],
+        true
+    );
 
-    if (file_exists($localConfigFile)) {
-        $localConfig = require $localConfigFile;
+    $configFile = __DIR__ . (
+        $isLocal
+            ? '/database.local.php'
+            : '/database.production.php'
+    );
+
+    if (!file_exists($configFile)) {
+        throw new RuntimeException('Database configuration file is missing.');
     }
 
-    $host = getenv('DB_HOST') ?: ($localConfig['host'] ?? '127.0.0.1');
-    $port = getenv('DB_PORT') ?: ($localConfig['port'] ?? '3306');
-    $database = getenv('DB_NAME') ?: ($localConfig['name'] ?? '');
-    $username = getenv('DB_USER') ?: ($localConfig['user'] ?? '');
-    $password = getenv('DB_PASSWORD') ?: ($localConfig['password'] ?? '');
+    $config = require $configFile;
+
+    $host = getenv('DB_HOST') ?: ($config['host'] ?? '127.0.0.1');
+    $port = getenv('DB_PORT') ?: ($config['port'] ?? '3306');
+    $database = getenv('DB_NAME') ?: ($config['name'] ?? '');
+    $username = getenv('DB_USER') ?: ($config['user'] ?? '');
+    $password = getenv('DB_PASSWORD') ?: ($config['password'] ?? '');
 
     if ($database === '' || $username === '') {
-        throw new RuntimeException(
-            'Database configuration is missing.'
-        );
+        throw new RuntimeException('Database configuration is missing.');
     }
 
     $dsn = sprintf(
