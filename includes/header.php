@@ -16,6 +16,7 @@ $currentPage = $_GET['page'] ?? 'dashboard';
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PrintFlow</title>
     <link rel="stylesheet" href="<?php echo e(assetUrl('public/css/style.css')); ?>">
+    <link rel="icon" href="/favicon.ico" sizes="any">
     <script src="<?php echo e(assetUrl('public/js/script.js')); ?>" defer></script>
 </head>
 <body>
